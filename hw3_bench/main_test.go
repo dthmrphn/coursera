@@ -45,18 +45,8 @@ func BenchmarkFast(b *testing.B) {
 	}
 }
 
-// goos: linux
-// goarch: amd64
-// pkg: localhost/coursera/hw3_bench
-// cpu: AMD Ryzen 7 2700 Eight-Core Processor          
-// BenchmarkSlow-8   	      27	  44724427 ns/op	19965092 B/op	  189812 allocs/op
-// PASS
-// ok  	localhost/coursera/hw3_bench	1.357s
-
-// goos: linux
-// goarch: amd64
-// pkg: localhost/coursera/hw3_bench
-// cpu: AMD Ryzen 7 2700 Eight-Core Processor          
-// BenchmarkFast-8   	      32	  36022844 ns/op	16704014 B/op	  190781 allocs/op
-// PASS
-// ok  	localhost/coursera/hw3_bench	1.281s
+func BenchmarkFastDefault(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		FastSearchDefault(ioutil.Discard)
+	}
+}

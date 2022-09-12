@@ -2,106 +2,72 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"io"
+	"localhost/coursera/hw3_bench/fast"
 	"os"
-	"regexp"
+	"os/exec"
+	"strconv"
+	"strings"
 )
 
-func fastSearchMakeUsers(data string) map[string]interface{} {
-	user := make(map[string]interface{})
-	err := json.Unmarshal([]byte(data), &user)
+func FastSearch(out io.Writer) {
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		panic(err)
 	}
-	return user
+
+	fast.FastSearch(out, data)
 }
 
-func FastSearch(out io.Writer) {
-	r := regexp.MustCompile("@")
-	seenBrowsers := []string{}
-	uniqueBrowsers := 0
-	foundUsers := ""
-
-	file, err := os.Open(filePath)
+func FastSearchDefault(out io.Writer) {
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		panic(err)
 	}
-	defer file.Close()
-	
-	fileScanner := bufio.NewScanner(file)
-	if err != nil {
-		panic(err)
-	}
-	
-	i := -1
-	for fileScanner.Scan() {
-		user := fastSearchMakeUsers(fileScanner.Text())
-		i = i + 1
 
-		isAndroid := false
-		isMSIE := false
+	fast.FastSearchDefault(out, data)
+}
 
-		browsers, ok := user["browsers"].([]interface{})
-		if !ok {
-			continue
-		}
-
-		for _, browserRaw := range browsers {
-			browser, ok := browserRaw.(string)
-			if !ok {
-				continue
-			}
-			if ok, err := regexp.MatchString("Android", browser); ok && err == nil {
-				isAndroid = true
-				notSeenBefore := true
-				for _, item := range seenBrowsers {
-					if item == browser {
-						notSeenBefore = false
-					}
-				}
-				if notSeenBefore {
-					seenBrowsers = append(seenBrowsers, browser)
-					uniqueBrowsers++
-				}
-			}
-		}
-
-		for _, browserRaw := range browsers {
-			browser, ok := browserRaw.(string)
-			if !ok {
-				continue
-			}
-			if ok, err := regexp.MatchString("MSIE", browser); ok && err == nil {
-				isMSIE = true
-				notSeenBefore := true
-				for _, item := range seenBrowsers {
-					if item == browser {
-						notSeenBefore = false
-					}
-				}
-				if notSeenBefore {
-					seenBrowsers = append(seenBrowsers, browser)
-					uniqueBrowsers++
-				}
-			}
-		}
-
-		if !(isAndroid && isMSIE) {
-			continue
-		}
-
-		email := r.ReplaceAllString(user["email"].(string), " [at] ")
-		foundUsers += fmt.Sprintf("[%d] %s <%s>\n", i, user["name"], email)
-	}
-
-	fmt.Fprintln(out, "found users:\n"+foundUsers)
-	fmt.Fprintln(out, "Total unique browsers", len(seenBrowsers))
+type benchResultsValues struct {
+	name   string
+	ops    uint32
+	bytes  uint32
+	allocs uint32
 }
 
 func main() {
-	out := os.Stdout
+	out, err := exec.Command("go", "test", "-bench", ".", "-benchmem").Output()
+	if err != nil {
+		panic(err)
+	}
 
-	SlowSearch(out)
+	benchs := []benchResultsValues{}
+
+	reader := bufio.NewReader(bytes.NewReader(out))
+	for {
+		s, err := reader.ReadString('\n')
+		if err == io.EOF {
+			break
+		}
+		if strings.Contains(s, "Benchmark") {
+			ss := strings.Fields(s)
+			ops, _ := strconv.Atoi(ss[2])
+			bytes, _ := strconv.Atoi(ss[4])
+			allocs, _ := strconv.Atoi(ss[6])
+			bench := benchResultsValues{
+				name:   ss[0],
+				ops:    uint32(ops),
+				bytes:  uint32(bytes),
+				allocs: uint32(allocs),
+			}
+			benchs = append(benchs, bench)
+		}
+	}
+
+	fmt.Printf("%s vs %s\n", benchs[0].name, benchs[1].name)
+	fmt.Printf("\tns: \t%f\n", float32(benchs[0].ops)/float32(benchs[1].ops))
+	fmt.Printf("\tmem: \t%f\n", float32(benchs[0].bytes)/float32(benchs[1].bytes))
+	fmt.Printf("\talloc: \t%f\n", float32(benchs[0].allocs)/float32(benchs[1].allocs))
 }

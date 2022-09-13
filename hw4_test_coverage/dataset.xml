@@ -700,4 +700,24 @@
     <registered>2014-08-09T02:04:24 -03:00</registered>
     <favoriteFruit>strawberry</favoriteFruit>
   </row>
+    <row>
+    <id>0</id>
+    <guid>1a6fa827-62f1-45f6-b579-aaead2b47169</guid>
+    <isActive>false</isActive>
+    <balance>$2,144.93</balance>
+    <picture>http://placehold.it/32x32</picture>
+    <age>21</age>
+    <eyeColor>green</eyeColor>
+    <first_name>Boyd</first_name>
+    <last_name>Wolf</last_name>
+    <gender>male</gender>
+    <company>HOPELI</company>
+    <email>boydwolf@hopeli.com</email>
+    <phone>+1 (956) 593-2402</phone>
+    <address>586 Winthrop Street, Edneyville, Mississippi, 9555</address>
+    <about>Nulla cillum enim voluptate consequat laborum esse excepteur occaecat commodo nostrud excepteur ut cupidatat. Occaecat minim incididunt ut proident ad sint nostrud ad laborum sint pariatur. Ut nulla commodo dolore officia. Consequat anim eiusmod amet commodo eiusmod deserunt culpa. Ea sit dolore nostrud cillum proident nisi mollit est Lorem pariatur. Lorem aute officia deserunt dolor nisi aliqua consequat nulla nostrud ipsum irure id deserunt dolore. Minim reprehenderit nulla exercitation labore ipsum.
+</about>
+    <registered>2017-02-05T06:23:27 -03:00</registered>
+    <favoriteFruit>apple</favoriteFruit>
+  </row>
 </root>

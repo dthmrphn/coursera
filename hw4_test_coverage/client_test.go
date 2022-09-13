@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"encoding/xml"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -74,21 +74,34 @@ func NewTestServer(token string, URL string) TestServer {
 }
 
 func SearchServer(w http.ResponseWriter, r *http.Request) {
-	switch r.Header.Get("AccessToken") {
-	case "json":
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, "{}]")
-		return
-	case "internal":
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	case "brokenaccesstoken":
+	if r.Header.Get("AccessToken") != AccessToken {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
-	if r.URL.Path == "/timeout" {
+	switch r.URL.Path {
+	case "/search":
+		break
+	case "/json":
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "{131]")
+		return
+	case "/jsonq":
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "1234567")
+		return
+	case "/internal":
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	case "/timeout":
 		w.WriteHeader(http.StatusFound)
+		return
+	case "/timeouts":
+		w.WriteHeader(http.StatusFound)
+		time.Sleep(time.Second * 2)
+		return
+	default:
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
@@ -119,6 +132,14 @@ func SearchServer(w http.ResponseWriter, r *http.Request) {
 			user := user.Convert()
 			users = append(users, *user)
 		}
+	}
+
+	if query != "" && len(users) == 0 {
+		js, _ := json.Marshal(SearchErrorResponse{"no records with value " + query})
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, string(js))
+		return
 	}
 
 	order_by, _ := strconv.Atoi(q.Get("order_by"))
@@ -167,7 +188,7 @@ func (r *Row) Convert() *User {
 }
 
 func TestSearchUserQuery(t *testing.T) {
-	ts := NewTestServer(AccessToken, "")
+	ts := NewTestServer(AccessToken, "/search")
 	defer ts.Close()
 
 	sc_right := SearchRequest{
@@ -179,7 +200,7 @@ func TestSearchUserQuery(t *testing.T) {
 
 	sc_wrong := SearchRequest{
 		Limit:      1,
-		Query:      "Boyd",
+		Query:      "Boyd1234",
 		OrderBy:    -1,
 		OrderField: "WRONG",
 	}
@@ -212,7 +233,7 @@ func TestSearchUserQuery(t *testing.T) {
 }
 
 func TestSearchUserOrder(t *testing.T) {
-	ts := NewTestServer(AccessToken, "")
+	ts := NewTestServer(AccessToken, "/search")
 	defer ts.Close()
 
 	sr_inc := &SearchRequest{
@@ -259,7 +280,7 @@ func TestSearchUserOrder(t *testing.T) {
 }
 
 func TestSearchUserOrderLimits(t *testing.T) {
-	ts := NewTestServer(AccessToken, "")
+	ts := NewTestServer(AccessToken, "/search")
 	defer ts.Close()
 
 	sr1 := &SearchRequest{
@@ -309,7 +330,7 @@ func TestLimits(t *testing.T) {
 }
 
 func TestWrongToken(t *testing.T) {
-	ts := NewTestServer("broken"+AccessToken, "")
+	ts := NewTestServer("broken"+AccessToken, "/search")
 	defer ts.Close()
 
 	_, err := ts.Search.FindUsers(SearchRequest{Query: "any"})
@@ -318,7 +339,7 @@ func TestWrongToken(t *testing.T) {
 }
 
 func TestInternal(t *testing.T) {
-	ts := NewTestServer("internal", "")
+	ts := NewTestServer(AccessToken, "/internal")
 	defer ts.Close()
 
 	_, err := ts.Search.FindUsers(SearchRequest{Query: "any"})
@@ -327,7 +348,16 @@ func TestInternal(t *testing.T) {
 }
 
 func TestWrongJSON(t *testing.T) {
-	ts := NewTestServer("json", "")
+	ts := NewTestServer(AccessToken, "/json")
+	defer ts.Close()
+
+	_, err := ts.Search.FindUsers(SearchRequest{Query: "any"})
+
+	assert.NotEqual(t, err, nil)
+}
+
+func TestWrongJSONQuery(t *testing.T) {
+	ts := NewTestServer(AccessToken, "/jsonq")
 	defer ts.Close()
 
 	_, err := ts.Search.FindUsers(SearchRequest{Query: "any"})
@@ -344,12 +374,11 @@ func TestTimeout(t *testing.T) {
 	assert.NotEqual(t, err, nil)
 }
 
-func TestUniqNames(t *testing.T) {
-	m := map[string]int{}
+func TestTimeoutS(t *testing.T) {
+	ts := NewTestServer(AccessToken, "/timeouts")
+	defer ts.Close()
 
-	for _, u := range content.Users {
-		m[u.About]++
+	_, err := ts.Search.FindUsers(SearchRequest{Query: "any"})
 
-	}
-	fmt.Print(m)
+	assert.NotEqual(t, err, nil)
 }

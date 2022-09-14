@@ -131,8 +131,8 @@ func TestSearchClientUsers(t *testing.T) {
 		e error
 	}{
 		{"1", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Id", OrderBy: OrderByAsIs}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
-		{"2", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Age", OrderBy: OrderByAsIs}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
-		{"3", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Name", OrderBy: OrderByAsIs}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
+		{"2", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Age", OrderBy: OrderByAsc}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
+		{"3", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Name", OrderBy: OrderByDesc}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
 		{"4", AccessToken, SearchRequest{Query: "Boyd", Limit: 0, OrderField: "Id", OrderBy: OrderByAsIs}, []User{}, nil},
 	}
 	for _, tt := range tests {

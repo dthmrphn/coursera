@@ -166,9 +166,7 @@ func (s *server) SearchRequest(req string) (*SearchRequest, error) {
 }
 
 func sortUsers(u []User, order string, inc int) []User {
-	sorter := func(a, b User) bool {
-		return true
-	}
+	sorter := func(a, b User) bool { return true }
 
 	switch order {
 	case "Id":
@@ -180,9 +178,7 @@ func sortUsers(u []User, order string, inc int) []User {
 		sorter = func(a, b User) bool { return a.Name < b.Name }
 	}
 
-	sort.Slice(u, func(i, j int) bool {
-		return sorter(u[i], u[j]) && (inc == -1)
-	})
+	sort.Slice(u, func(i, j int) bool { return sorter(u[i], u[j]) && (inc == -1) })
 
 	return u
 }
@@ -199,10 +195,7 @@ func (s *server) SearchUsers(sc *SearchRequest) ([]byte, int) {
 
 	rv = sortUsers(rv, sc.OrderField, sc.OrderBy)
 
-	js, err := json.Marshal(rv)
-	if err != nil {
-		return nil, http.StatusInternalServerError
-	}
+	js, _ := json.Marshal(rv)
 
 	return js, http.StatusOK
 }

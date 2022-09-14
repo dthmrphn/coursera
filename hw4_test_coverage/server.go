@@ -3,13 +3,23 @@ package main
 import (
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
-	"google.golang.org/protobuf/internal/errors"
+	"github.com/pkg/errors"
+)
+
+var (
+	ErrorMissedField = fmt.Errorf("field missed: ")
+	ErrorStrIntCast  = fmt.Errorf("couldnt cast s to i: ")
+	ErrorWrongValue  = fmt.Errorf("wrong value of: ")
+	ErrorWrongQuery  = fmt.Errorf("query is wrong")
+	ErrorBadOrderF   = fmt.Errorf("OrderField invalid")
 )
 
 type root struct {
@@ -45,10 +55,14 @@ func NewServer(token string, fp string) (s *server, e error) {
 		return nil, errors.Wrap(err, "couldnt parse xml data")
 	}
 
+	rv := &server{}
+	rv.token = token
+	rv.users = make([]User, 0)
 	for _, u := range root.Users {
-		s.users = append(s.users, *u.Convert())
+		rv.users = append(rv.users, *u.Convert())
 	}
-	s.token = token
+
+	s = rv
 
 	return s, nil
 }
@@ -63,11 +77,7 @@ func (r *row) Convert() *User {
 	}
 }
 
-func sendError() {
-
-}
-
-func (s *server) HandleHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.token != r.Header.Get("AccessToken") {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -76,6 +86,8 @@ func (s *server) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 	sc, err := s.SearchRequest(r.URL.RawQuery)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
+		j, _ := json.Marshal(SearchErrorResponse{Error: errors.Cause(err).Error()})
+		w.Write(j)
 		return
 	}
 
@@ -87,71 +99,110 @@ func (s *server) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *server) SearchRequest(req string) (*SearchRequest, error) {
 	q, err := url.ParseQuery(req)
 	if err != nil {
-		return nil, errors.Wrap(err, "couldnt parse req")
-	}
-	sr := &SearchRequest{}
-	sr.Limit, err = strconv.Atoi(q.Get("limit"))
-	if err != nil {
-		return nil, errors.Wrap(err, "couldnt get limit field")
+		return nil, errors.Wrap(ErrorWrongQuery, "couldnt parse req")
 	}
 
+	sr := &SearchRequest{}
+
+	if q.Get("limit") == "" {
+		return nil, errors.Wrap(ErrorMissedField, "limit")
+	}
+	sr.Limit, err = strconv.Atoi(q.Get("limit"))
+	if err != nil {
+		return nil, errors.Wrap(ErrorStrIntCast, "limit")
+	}
+	if sr.Limit < 0 {
+		return nil, errors.Wrap(ErrorWrongValue, "limit should be positive")
+	}
+
+	if q.Get("offset") == "" {
+		return nil, errors.Wrap(ErrorMissedField, "field")
+	}
 	sr.Offset, err = strconv.Atoi(q.Get("offset"))
 	if err != nil {
-		return nil, errors.Wrap(err, "couldnt get offset field")
+		return nil, errors.Wrap(ErrorStrIntCast, "offset")
+	}
+	if sr.Offset < 0 {
+		return nil, errors.Wrap(ErrorWrongValue, "offset should be positive")
+	}
+
+	sr.OrderBy, err = strconv.Atoi(q.Get("order_by"))
+	if err != nil {
+		return nil, errors.Wrap(ErrorStrIntCast, "order_by")
+	}
+
+	if sr.Limit > 25 {
+		sr.Limit = 25
+	}
+
+	if sr.Offset > sr.Limit {
+		return nil, errors.Wrap(ErrorWrongValue, "offset > limit")
+	}
+
+	switch sr.OrderBy {
+	case OrderByAsIs:
+	case OrderByAsc:
+	case OrderByDesc:
+	default:
+		return nil, errors.Wrap(ErrorBadOrderF, "order_by")
 	}
 
 	sr.Query = q.Get("query")
+	sr.OrderField = q.Get("order_field")
+
+	switch sr.OrderField {
+	case "":
+		fallthrough
+	case "Id":
+		fallthrough
+	case "Age":
+		fallthrough
+	case "Name":
+	default:
+		return nil, errors.Wrap(ErrorWrongValue, "order")
+	}
 
 	return sr, nil
+}
+
+func sortUsers(u []User, order string, inc int) []User {
+	sorter := func(a, b User) bool {
+		return true
+	}
+
+	switch order {
+	case "Id":
+		sorter = func(a, b User) bool { return a.Id < b.Id }
+	case "Age":
+		sorter = func(a, b User) bool { return a.Age < b.Age }
+	case "":
+	case "Name":
+		sorter = func(a, b User) bool { return a.Name < b.Name }
+	}
+
+	sort.Slice(u, func(i, j int) bool {
+		return sorter(u[i], u[j]) && (inc == -1)
+	})
+
+	return u
 }
 
 func (s *server) SearchUsers(sc *SearchRequest) ([]byte, int) {
 	rv := make([]User, 0)
 
-	for i := 0; i < sc.Limit; i++ {
+	for i := sc.Offset; i < sc.Limit; i++ {
 		if !strings.Contains(s.users[i].Name, sc.Query) && !strings.Contains(s.users[i].About, sc.Query) {
 			continue
 		}
-		if i > sc.Offset {
-			rv = append(rv, s.users[i])
-		}
+		rv = append(rv, s.users[i])
 	}
+
+	rv = sortUsers(rv, sc.OrderField, sc.OrderBy)
 
 	js, err := json.Marshal(rv)
 	if err != nil {
 		return nil, http.StatusInternalServerError
 	}
-
-	// if query != "" && len(users) == 0 {
-	// 	js, _ := json.Marshal(SearchErrorResponse{"no records with value " + query})
-	// 	w.WriteHeader(http.StatusBadRequest)
-	// 	w.Header().Set("Content-Type", "application/json")
-	// 	io.WriteString(w, string(js))
-	// 	return
-	// }
-
-	// order_by, _ := strconv.Atoi(q.Get("order_by"))
-	// var sorter func(a, b User) bool
-	// if order_by != 0 {
-	// 	switch q.Get("order_field") {
-	// 	case "Id":
-	// 		sorter = func(a, b User) bool { return a.Id < b.Id }
-	// 	case "Age":
-	// 		sorter = func(a, b User) bool { return a.Age < b.Age }
-	// 	case "":
-	// 	case "Name":
-	// 		sorter = func(a, b User) bool { return a.Name < b.Name }
-	// 	default:
-	// 		js, _ := json.Marshal(SearchErrorResponse{"ErrorBadOrderField"})
-	// 		w.WriteHeader(http.StatusBadRequest)
-	// 		w.Header().Set("Content-Type", "application/json")
-	// 		io.WriteString(w, string(js))
-	// 		return
-	// 	}
-	// 	sort.Slice(users, func(i, j int) bool {
-	// 		return sorter(users[i], users[j]) && (order_by == -1)
-	// 	})
-	// }
 
 	return js, http.StatusOK
 }

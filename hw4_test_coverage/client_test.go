@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -30,11 +29,6 @@ func stubBrokenJsonErr() (int, []byte) {
 
 func stubBrokenJsonOk() (int, []byte) {
 	return http.StatusOK, []byte("jSoN")
-}
-
-func stubBadOrderField() (int, []byte) {
-	js, _ := json.Marshal(SearchErrorResponse{Error: "ErrorBadOrderField"})
-	return http.StatusBadRequest, js
 }
 
 func (s *stubServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -66,8 +60,8 @@ func TestSearchClient(t *testing.T) {
 		{"1", AccessToken, "", SearchRequest{Limit: -1}, fmt.Errorf("limit must be > 0")},
 		{"2", AccessToken, "", SearchRequest{Offset: -1}, fmt.Errorf("offset must be > 0")},
 		{"3", "AcEstOk3n", s.URL, SearchRequest{Query: "any"}, fmt.Errorf("Bad AccessToken")},
-		{"4", AccessToken, s.URL, SearchRequest{OrderField: "any"}, fmt.Errorf("unknown bad request error: wrong value of: ")},
-		{"5", AccessToken, s.URL, SearchRequest{OrderBy: 2}, fmt.Errorf("unknown bad request error: OrderField invalid")},
+		{"4", AccessToken, s.URL, SearchRequest{OrderField: "any"}, fmt.Errorf("OrderFeld %s invalid", "any")},
+		{"5", AccessToken, s.URL, SearchRequest{OrderBy: 2}, fmt.Errorf("unknown bad request error: %s", ErrorInvalidOrderby.Error())},
 		{"6", AccessToken, s.URL, SearchRequest{Query: "Boyd", Limit: 30}, nil},
 	}
 	for _, tt := range tests {
@@ -88,7 +82,6 @@ func TestSearchClientStubs(t *testing.T) {
 	s_tw := httptest.NewServer(&stubServer{f: stubWithTimeOut})
 	s_tn := httptest.NewServer(&stubServer{f: stubNoTimeOut})
 	s_ie := httptest.NewServer(&stubServer{f: stubInternalError})
-	s_br := httptest.NewServer(&stubServer{f: stubBadOrderField})
 
 	tests := []struct {
 		n string
@@ -102,7 +95,6 @@ func TestSearchClientStubs(t *testing.T) {
 		{"3", AccessToken, s_tw.URL, SearchRequest{}, fmt.Errorf("timeout for limit=1&offset=0&order_by=0&order_field=&query=")},
 		{"4", AccessToken, s_tn.URL, SearchRequest{}, fmt.Errorf("unknown error Get \"%s?limit=1&offset=0&order_by=0&order_field=&query=\": 302 response missing Location header", s_tn.URL)},
 		{"5", AccessToken, s_ie.URL, SearchRequest{}, fmt.Errorf("SearchServer fatal error")},
-		{"6", AccessToken, s_br.URL, SearchRequest{}, fmt.Errorf("OrderFeld  invalid")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.n, func(t *testing.T) {
@@ -125,26 +117,27 @@ func TestSearchClientUsers(t *testing.T) {
 
 	tests := []struct {
 		n string
-		t string
 		r SearchRequest
 		u []User
 		e error
 	}{
-		{"1", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Id", OrderBy: OrderByAsIs}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
-		{"2", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Age", OrderBy: OrderByAsc}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
-		{"3", AccessToken, SearchRequest{Query: "Boyd", Limit: 3, OrderField: "Name", OrderBy: OrderByDesc}, []User{User{Name: "Boyd Wolf", Age: 22}}, nil},
-		{"4", AccessToken, SearchRequest{Query: "Boyd", Limit: 0, OrderField: "Id", OrderBy: OrderByAsIs}, []User{}, nil},
+		{"1", SearchRequest{Limit: 4, OrderField: "Id", OrderBy: OrderByDesc}, []User{ss.users[0], ss.users[1], ss.users[2], ss.users[3]}, nil},
+		{"2", SearchRequest{Limit: 4, OrderField: "Id", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[3], ss.users[2], ss.users[1]}, nil},
+		{"3", SearchRequest{Limit: 4, OrderField: "Age", OrderBy: OrderByDesc}, []User{ss.users[1], ss.users[0], ss.users[2], ss.users[3]}, nil},
+		{"4", SearchRequest{Limit: 4, OrderField: "Age", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[3], ss.users[2], ss.users[0]}, nil},
+		{"5", SearchRequest{Limit: 4, OrderField: "Name", OrderBy: OrderByDesc}, []User{ss.users[0], ss.users[2], ss.users[3], ss.users[1]}, nil},
+		{"6", SearchRequest{Limit: 4, OrderField: "Name", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[1], ss.users[3], ss.users[2]}, nil},
+		{"7", SearchRequest{Limit: 4, OrderField: "", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[1], ss.users[3], ss.users[2]}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.n, func(t *testing.T) {
 			srv := &SearchClient{
-				AccessToken: tt.t,
+				AccessToken: AccessToken,
 				URL:         s.URL,
 			}
 			r, err := srv.FindUsers(tt.r)
 			assert.Nil(t, err)
-			// assert.Equal(t, tt.u[0].Name, r.Users[0].Name)
-			assert.Equal(t, len(tt.u), len(r.Users))
+			assert.Equal(t, tt.u, r.Users)
 		})
 	}
 }

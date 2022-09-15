@@ -37,12 +37,15 @@ func TestSearchRequest(t *testing.T) {
 		{"6", "offset=1&limit=1&order_by=ss", nil, ErrorStrIntCast},
 		{"7", "offset=ss&limit=1&order_by=1", nil, ErrorStrIntCast},
 		{"8", "offset=1&limit=ss&order_by=1", nil, ErrorStrIntCast},
-		{"9", "offset=5&limit=1&order_by=1", nil, ErrorWrongValue},
+		{"9", "offset=100&limit=10&order_by=1", nil, ErrorWrongValue},
+		{"10", "offset=5&limit=1&order_by=1", &SearchRequest{Offset: 5, Limit: 1, OrderBy: 1}, nil},
+		{"11", "offset=5&limit=30&order_by=1&order_field=Age", &SearchRequest{Offset: 5, Limit: 25, OrderBy: 1, OrderField: "Age"}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.n, func(t *testing.T) {
-			_, err := s.SearchRequest(tt.q)
+			r, err := s.SearchRequest(tt.q)
 			assert.Equal(t, tt.e, errors.Cause(err))
+			assert.Equal(t, tt.r, r)
 		})
 	}
 }

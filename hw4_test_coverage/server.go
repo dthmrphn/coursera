@@ -15,11 +15,12 @@ import (
 )
 
 var (
-	ErrorMissedField = fmt.Errorf("field missed: ")
-	ErrorStrIntCast  = fmt.Errorf("couldnt cast s to i: ")
-	ErrorWrongValue  = fmt.Errorf("wrong value of: ")
-	ErrorWrongQuery  = fmt.Errorf("query is wrong")
-	ErrorBadOrderF   = fmt.Errorf("OrderField invalid")
+	ErrorMissedField    = fmt.Errorf("field missed")
+	ErrorStrIntCast     = fmt.Errorf("couldnt cast s to i")
+	ErrorWrongValue     = fmt.Errorf("wrong value")
+	ErrorWrongQuery     = fmt.Errorf("query is wrong")
+	ErrorInvalidOrder   = fmt.Errorf("ErrorBadOrderField")
+	ErrorInvalidOrderby = fmt.Errorf("should be [-1:1]")
 )
 
 type root struct {
@@ -125,6 +126,9 @@ func (s *server) SearchRequest(req string) (*SearchRequest, error) {
 	if sr.Offset < 0 {
 		return nil, errors.Wrap(ErrorWrongValue, "offset should be positive")
 	}
+	if sr.Offset > len(s.users) {
+		return nil, errors.Wrap(ErrorWrongValue, "offset is too big")
+	}
 
 	sr.OrderBy, err = strconv.Atoi(q.Get("order_by"))
 	if err != nil {
@@ -135,16 +139,12 @@ func (s *server) SearchRequest(req string) (*SearchRequest, error) {
 		sr.Limit = 25
 	}
 
-	if sr.Offset > sr.Limit {
-		return nil, errors.Wrap(ErrorWrongValue, "offset > limit")
-	}
-
 	switch sr.OrderBy {
 	case OrderByAsIs:
 	case OrderByAsc:
 	case OrderByDesc:
 	default:
-		return nil, errors.Wrap(ErrorBadOrderF, "order_by")
+		return nil, errors.Wrap(ErrorInvalidOrderby, fmt.Sprint(sr.OrderBy))
 	}
 
 	sr.Query = q.Get("query")
@@ -159,26 +159,52 @@ func (s *server) SearchRequest(req string) (*SearchRequest, error) {
 		fallthrough
 	case "Name":
 	default:
-		return nil, errors.Wrap(ErrorWrongValue, "order")
+		return nil, errors.Wrap(ErrorInvalidOrder, sr.OrderField)
 	}
 
 	return sr, nil
 }
 
+func sortbynm(a, b User, inc int) bool {
+	if inc > 0 {
+		return a.Name < b.Name
+	}
+	return a.Name > b.Name
+}
+
+func sortbyid(a, b User, inc int) bool {
+	if inc > 0 {
+		return a.Id < b.Id
+	}
+	return a.Id > b.Id
+}
+
+func sortbyag(a, b User, inc int) bool {
+	if inc > 0 {
+		return a.Age < b.Age
+	}
+	return a.Age > b.Age
+}
+
 func sortUsers(u []User, order string, inc int) []User {
-	sorter := func(a, b User) bool { return true }
+	if inc == OrderByAsIs {
+		return u
+	}
+
+	var sorter func(User, User, int) bool
 
 	switch order {
 	case "Id":
-		sorter = func(a, b User) bool { return a.Id < b.Id }
+		sorter = sortbyid
 	case "Age":
-		sorter = func(a, b User) bool { return a.Age < b.Age }
+		sorter = sortbyag
 	case "":
+		fallthrough
 	case "Name":
-		sorter = func(a, b User) bool { return a.Name < b.Name }
+		sorter = sortbynm
 	}
 
-	sort.Slice(u, func(i, j int) bool { return sorter(u[i], u[j]) && (inc == -1) })
+	sort.Slice(u, func(i, j int) bool { return sorter(u[i], u[j], inc) })
 
 	return u
 }

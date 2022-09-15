@@ -49,6 +49,7 @@ func TestSearchClient(t *testing.T) {
 	assert.NoError(t, e)
 
 	s := httptest.NewServer(ss)
+	defer s.Close()
 
 	tests := []struct {
 		n string
@@ -59,7 +60,7 @@ func TestSearchClient(t *testing.T) {
 	}{
 		{"1", AccessToken, "", SearchRequest{Limit: -1}, fmt.Errorf("limit must be > 0")},
 		{"2", AccessToken, "", SearchRequest{Offset: -1}, fmt.Errorf("offset must be > 0")},
-		{"3", "AcEstOk3n", s.URL, SearchRequest{Query: "any"}, fmt.Errorf("Bad AccessToken")},
+		{"3", AccessToken + "?", s.URL, SearchRequest{Query: "any"}, fmt.Errorf("Bad AccessToken")},
 		{"4", AccessToken, s.URL, SearchRequest{OrderField: "any"}, fmt.Errorf("OrderFeld %s invalid", "any")},
 		{"5", AccessToken, s.URL, SearchRequest{OrderBy: 2}, fmt.Errorf("unknown bad request error: %s", ErrorInvalidOrderby.Error())},
 		{"6", AccessToken, s.URL, SearchRequest{Query: "Boyd", Limit: 30}, nil},
@@ -77,32 +78,29 @@ func TestSearchClient(t *testing.T) {
 }
 
 func TestSearchClientStubs(t *testing.T) {
-	s_jo := httptest.NewServer(&stubServer{f: stubBrokenJsonOk})
-	s_je := httptest.NewServer(&stubServer{f: stubBrokenJsonErr})
-	s_tw := httptest.NewServer(&stubServer{f: stubWithTimeOut})
-	s_tn := httptest.NewServer(&stubServer{f: stubNoTimeOut})
-	s_ie := httptest.NewServer(&stubServer{f: stubInternalError})
+	ss := &stubServer{}
+	s := httptest.NewServer(ss)
+	defer s.Close()
 
 	tests := []struct {
 		n string
-		t string
-		u string
-		r SearchRequest
+		f func() (int, []byte)
 		e error
 	}{
-		{"1", AccessToken, s_jo.URL, SearchRequest{}, fmt.Errorf("cant unpack result json: invalid character 'j' looking for beginning of value")},
-		{"2", AccessToken, s_je.URL, SearchRequest{}, fmt.Errorf("cant unpack error json: invalid character 'j' looking for beginning of value")},
-		{"3", AccessToken, s_tw.URL, SearchRequest{}, fmt.Errorf("timeout for limit=1&offset=0&order_by=0&order_field=&query=")},
-		{"4", AccessToken, s_tn.URL, SearchRequest{}, fmt.Errorf("unknown error Get \"%s?limit=1&offset=0&order_by=0&order_field=&query=\": 302 response missing Location header", s_tn.URL)},
-		{"5", AccessToken, s_ie.URL, SearchRequest{}, fmt.Errorf("SearchServer fatal error")},
+		{"1", stubNoTimeOut, fmt.Errorf("unknown error Get \"%s?limit=1&offset=0&order_by=0&order_field=&query=\": 302 response missing Location header", s.URL)},
+		{"2", stubWithTimeOut, fmt.Errorf("timeout for limit=1&offset=0&order_by=0&order_field=&query=")},
+		{"3", stubBrokenJsonOk, fmt.Errorf("cant unpack result json: invalid character 'j' looking for beginning of value")},
+		{"4", stubInternalError, fmt.Errorf("SearchServer fatal error")},
+		{"5", stubBrokenJsonErr, fmt.Errorf("cant unpack error json: invalid character 'j' looking for beginning of value")},
 	}
 	for _, tt := range tests {
+		ss.f = tt.f
 		t.Run(tt.n, func(t *testing.T) {
 			srv := &SearchClient{
-				AccessToken: tt.t,
-				URL:         tt.u,
+				AccessToken: AccessToken,
+				URL:         s.URL,
 			}
-			_, err := srv.FindUsers(tt.r)
+			_, err := srv.FindUsers(SearchRequest{})
 			assert.Equal(t, tt.e, err)
 		})
 	}
@@ -114,20 +112,20 @@ func TestSearchClientUsers(t *testing.T) {
 	assert.NoError(t, e)
 
 	s := httptest.NewServer(ss)
+	defer s.Close()
 
 	tests := []struct {
 		n string
 		r SearchRequest
 		u []User
-		e error
 	}{
-		{"1", SearchRequest{Limit: 4, OrderField: "Id", OrderBy: OrderByDesc}, []User{ss.users[0], ss.users[1], ss.users[2], ss.users[3]}, nil},
-		{"2", SearchRequest{Limit: 4, OrderField: "Id", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[3], ss.users[2], ss.users[1]}, nil},
-		{"3", SearchRequest{Limit: 4, OrderField: "Age", OrderBy: OrderByDesc}, []User{ss.users[1], ss.users[0], ss.users[2], ss.users[3]}, nil},
-		{"4", SearchRequest{Limit: 4, OrderField: "Age", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[3], ss.users[2], ss.users[0]}, nil},
-		{"5", SearchRequest{Limit: 4, OrderField: "Name", OrderBy: OrderByDesc}, []User{ss.users[0], ss.users[2], ss.users[3], ss.users[1]}, nil},
-		{"6", SearchRequest{Limit: 4, OrderField: "Name", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[1], ss.users[3], ss.users[2]}, nil},
-		{"7", SearchRequest{Limit: 4, OrderField: "", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[1], ss.users[3], ss.users[2]}, nil},
+		{"1", SearchRequest{Limit: 4, OrderField: "Id", OrderBy: OrderByDesc}, []User{ss.users[0], ss.users[1], ss.users[2], ss.users[3]}},
+		{"2", SearchRequest{Limit: 4, OrderField: "Id", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[3], ss.users[2], ss.users[1]}},
+		{"3", SearchRequest{Limit: 4, OrderField: "Age", OrderBy: OrderByDesc}, []User{ss.users[1], ss.users[0], ss.users[2], ss.users[3]}},
+		{"4", SearchRequest{Limit: 4, OrderField: "Age", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[3], ss.users[2], ss.users[0]}},
+		{"5", SearchRequest{Limit: 4, OrderField: "Name", OrderBy: OrderByDesc}, []User{ss.users[0], ss.users[2], ss.users[3], ss.users[1]}},
+		{"6", SearchRequest{Limit: 4, OrderField: "Name", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[1], ss.users[3], ss.users[2]}},
+		{"7", SearchRequest{Limit: 4, OrderField: "", OrderBy: OrderByAsc}, []User{ss.users[4], ss.users[1], ss.users[3], ss.users[2]}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.n, func(t *testing.T) {

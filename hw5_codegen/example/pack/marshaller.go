@@ -1,7 +1,9 @@
 package main
 
-import "encoding/binary"
-import "bytes"
+import (
+	"bytes"
+	"encoding/binary"
+)
 
 func (in *User) Unpack(data []byte) error {
 	r := bytes.NewReader(data)

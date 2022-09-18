@@ -47,6 +47,8 @@ type MethodHandler struct {
 	rett []string // methods ret vals types
 
 	url string // handler url
+
+	child []*MethodHandler // calls
 }
 
 func (mh *MethodHandler) Template() MethodTemplate {
@@ -63,15 +65,20 @@ func (mh *MethodHandler) Template() MethodTemplate {
 }
 
 func (mh *MethodHandler) PrintHandler(w io.Writer) {
+	// func declaration
 	fmt.Fprintf(w, "func (%s %s) ", mh.arg, mh.rec)
 	fmt.Fprintf(w, "handle%s(w http.ResponseWriter, r *http.Request) {\n", mh.n)
+
+	// args definitions
 	for i := range mh.argt {
 		fmt.Fprintf(w, "\tvar %s %s\n", mh.args[i], mh.argt[i])
 	}
-	fmt.Fprintf(w, "\t%s := ", strings.Join(mh.rett, ", "))
-	fmt.Fprintf(w, "%s.%s(%s)\n", mh.arg, mh.n, strings.Join(mh.args, ", "))
-	fmt.Fprintf(w, "\tjs, _ := json.Marshal(%s)\n", mh.rett[0])
 
+	// actuall call
+	fmt.Fprintf(w, "\t%s := ", strings.Join(mh.rett, ", "))
+	fmt.Fprintf(w, "%s.%s(r.Context(), %s)\n", mh.arg, mh.n, strings.Join(mh.args, ", "))
+
+	fmt.Fprintf(w, "\tjs, _ := json.Marshal(%s)\n", mh.rett[0])
 	fmt.Fprintf(w, "\tw.WriteHeader(http.StatusOK)\n")
 	fmt.Fprintf(w, "\tw.Write(js)")
 	fmt.Fprintf(w, "\n}\n\n")
@@ -94,18 +101,20 @@ func ParseMethodHandler(f *ast.FuncDecl) (*MethodHandler, error) {
 
 	// arguments
 	for _, r := range f.Type.Params.List {
-		rv.args = append(rv.args, r.Names[0].Name)
+		// rv.args = append(rv.args, r.Names[0].Name)
 		switch xv := r.Type.(type) {
 		case *ast.StarExpr:
 			if si, ok := xv.X.(*ast.Ident); ok {
 				rv.argt = append(rv.argt, "*"+si.Name)
+				rv.args = append(rv.args, strings.ToLower(si.Name))
 			}
 		case *ast.Ident:
 			rv.argt = append(rv.argt, xv.Name)
-		case *ast.SelectorExpr:
-			if si, ok := xv.X.(*ast.Ident); ok {
-				rv.argt = append(rv.argt, si.Name+"."+xv.Sel.Name)
-			}
+			rv.args = append(rv.args, strings.ToLower(xv.Name))
+			// case *ast.SelectorExpr:
+			// 	if si, ok := xv.X.(*ast.Ident); ok {
+			// 		rv.argt = append(rv.argt, si.Name+"."+xv.Sel.Name)
+			// 	}
 		}
 	}
 
@@ -140,15 +149,94 @@ func ParseMethodHandler(f *ast.FuncDecl) (*MethodHandler, error) {
 	return rv, nil
 }
 
-func MakeHTTPHandler(w io.Writer, mm *map[string][]MethodHandler) {
-	for _, m := range *mm {
-		httpTpl.Execute(w, m[0].Template())
-		for _, i := range m {
+func needCodegen(doc *ast.CommentGroup, prefix string) bool {
+	nc := false
+
+	if doc == nil {
+		return nc
+	}
+
+	for _, c := range doc.List {
+		nc = nc || strings.HasPrefix(c.Text, prefix)
+	}
+
+	return nc
+}
+
+func ProccessFuncDecls(file *ast.File) ([]*MethodHandler, error) {
+	mm := map[string][]MethodHandler{}
+
+	for _, d := range file.Decls {
+		f, ok := d.(*ast.FuncDecl)
+		if ok {
+			if !needCodegen(f.Doc, "// apigen:api") {
+				continue
+			}
+			// only for struct methods
+			if f.Recv == nil {
+				continue
+			}
+
+			mh, e := ParseMethodHandler(f)
+			if e != nil {
+				return nil, e
+			}
+			mm[mh.rec] = append(mm[mh.rec], *mh)
+		}
+	}
+
+	if len(mm) == 0 {
+		return nil, fmt.Errorf("no marked methods to generate api")
+	}
+
+	mhs := make([]*MethodHandler, 0)
+
+	for _, m := range mm {
+		mh := &MethodHandler{
+			rec: m[0].rec,
+			arg: m[0].arg,
+		}
+		for i := range m {
+			mh.child = append(mh.child, &m[i])
+		}
+		mhs = append(mhs, mh)
+	}
+
+	return mhs, nil
+}
+
+func WriteHttpHandlersTemplate(w io.Writer, mhs []*MethodHandler) {
+	for _, m := range mhs {
+		httpTpl.Execute(w, m.Template())
+		for _, i := range m.child {
 			caseTpl.Execute(w, i.Template())
 		}
 		fmt.Fprintf(w, "\n\tdefault:")
 		fmt.Fprintf(w, "\n\t\tw.WriteHeader(http.StatusNotFound)")
 		fmt.Fprintf(w, "\n\t}")
-		fmt.Fprintf(w, "\n}\n")
+		fmt.Fprintf(w, "\n}\n\n")
+
+		for _, i := range m.child {
+			i.PrintHandler(w)
+		}
+	}
+}
+
+func WriteHttpHandlersFormat(w io.Writer, mhs []*MethodHandler) {
+	for _, m := range mhs {
+		fmt.Fprintf(w, "func (%s %s) ServeHTTP(w http.ResponseWriter, r *http.Request) {\n", m.arg, m.rec)
+		fmt.Fprintf(w, "\tswitch r.URL.Path {\n")
+		for _, i := range m.child {
+			fmt.Fprintf(w, "\tcase \"%s\":\n", i.url)
+			fmt.Fprintf(w, "\t\t%s.handle%s(w, r)\n", i.arg, i.n)
+		}
+		fmt.Fprintf(w, "\tdefault:\n")
+		fmt.Fprintf(w, "\t\tw.WriteHeader(http.StatusNotFound)\n")
+		fmt.Fprintf(w, "\t}\n")
+		fmt.Fprintf(w, "}\n\n")
+
+		for _, i := range m.child {
+			i.PrintHandler(w)
+		}
 	}
 }

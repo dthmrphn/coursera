@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"io"
@@ -9,31 +10,93 @@ import (
 )
 
 var (
-	handlTpl = template.Must(template.New("handlTpl").Parse(`
-func ({{.FieldArg}} {{.FieldRecv}}) handle{{.FieldName}}(w http.ResponseWriter, r *http.Request) {
-	{{.FieldArg}}.{{.FieldName}}({{.FieldArgs}})
+	hndlTmpl = template.Must(template.New("hndlTmpl").Parse(`
+func (s {{.Recv}}) handle{{.Name}}(w http.ResponseWriter, r *http.Request) (d interface{}, e error){
+	{{ if .Auth -}}
+	if r.Header.Get("X-Auth") != "100500" {
+		return nil, ApiError{http.StatusForbidden, fmt.Errorf("unauthorized")}
+	}
+	
+	{{ end -}}
+	
+	{{ if .Meth -}}
+	if r.Method != "{{ .Meth }}" {
+		return nil, ApiError{http.StatusNotAcceptable, fmt.Errorf("bad method")}
+	}
+	
+	{{ end -}}
+	
+	params := url.Values{}
+	if r.Method == "GET" {
+		params = r.URL.Query()
+	} else {
+		body, _ := ioutil.ReadAll(r.Body)
+		params, _ = url.ParseQuery(string(body))
+	}
+
+	in, err := New{{.Argt}}(params)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.{{.Name}}(r.Context(), in)
 }
 	`))
-	httpTpl = template.Must(template.New("handlTpl").Parse(`
-func ({{.FieldArg}} {{.FieldRecv}}) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {`))
-	caseTpl = template.Must(template.New("handlTpl").Parse(`
-	case "{{.FieldUrl}}": 
-		{{.FieldArg}}.handle{{.FieldName}}(w, r)`))
-	defaultTpl = template.Must(template.New("handlTpl").Parse(`
-	default: 
-		w.WriteHeader(http.StatusNotFound)`))
+
+	httpTmpl = template.Must(template.New("httpTmpl").Parse(`
+func (s {{.Recv}}) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var (
+		err error
+		out interface{}
+	)
+
+	switch r.URL.Path {
+	{{ range .Methods }}case "{{ .Url }}":
+		out, err = s.handle{{ .Name }}(w, r)
+	{{ end }}default:
+		err = ApiError{Err: fmt.Errorf("unknown method"), HTTPStatus: http.StatusNotFound}
+	}
+
+	response := struct {
+		Data  interface{} ` + "`" + `json:"response,omitempty"` + "`" + `
+		Error string      ` + "`" + `json:"error"` + "`" + `
+	}{}
+
+	if err == nil {
+		response.Data = out
+	} else {
+		response.Error = err.Error()
+		if errApi, ok := err.(ApiError); ok {
+			w.WriteHeader(errApi.HTTPStatus)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}
+	
+	jsonResponse, _ := json.Marshal(response)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(jsonResponse)
+}
+	`))
 )
 
 type MethodTemplate struct {
-	FieldName string
-	FieldArg  string
-	FieldRecv string
-	FieldArgs string
-	FieldArgt string
-	FieldRets string
-	FieldRett string
-	FieldUrl  string
+	Name string
+	Arg  string
+	Recv string
+	Args string
+	Argt string
+	Rets string
+	Rett string
+	Url  string
+
+	Auth bool
+	Meth string
+}
+
+type HttpTemplate struct {
+	Recv    string
+	Methods []MethodTemplate
 }
 
 type MethodHandler struct {
@@ -48,20 +111,36 @@ type MethodHandler struct {
 
 	url string // handler url
 
+	auth bool
+	meth string
+
 	child []*MethodHandler // calls
 }
 
 func (mh *MethodHandler) Template() MethodTemplate {
 	return MethodTemplate{
-		FieldName: mh.n,
-		FieldArg:  mh.arg,
-		FieldRecv: mh.rec,
-		FieldArgs: strings.Join(mh.args, ", "),
-		FieldArgt: strings.Join(mh.argt, ", "),
-		FieldRets: strings.Join(mh.rets, ", "),
-		FieldRett: strings.Join(mh.rett, ", "),
-		FieldUrl:  mh.url,
+		Name: mh.n,
+		Arg:  mh.arg,
+		Recv: mh.rec,
+		Args: strings.Join(mh.args, ", "),
+		Argt: strings.Join(mh.argt, ", "),
+		Rets: strings.Join(mh.rets, ", "),
+		Rett: strings.Join(mh.rett, ", "),
+		Url:  mh.url,
+		Auth: mh.auth,
+		Meth: mh.meth,
 	}
+}
+
+func (mh *MethodHandler) HttpTemplate() HttpTemplate {
+	rv := HttpTemplate{}
+	rv.Recv = mh.rec
+
+	for _, m := range mh.child {
+		rv.Methods = append(rv.Methods, m.Template())
+	}
+
+	return rv
 }
 
 func (mh *MethodHandler) PrintHandler(w io.Writer) {
@@ -133,18 +212,24 @@ func ParseMethodHandler(f *ast.FuncDecl) (*MethodHandler, error) {
 	}
 
 	// url
-	hasurl := false
-	ss := []string{}
+	api := struct {
+		Meth string `json:"method"`
+		Url  string `json:"url"`
+		Auth bool   `json:"auth"`
+	}{}
+
 	for _, r := range f.Doc.List {
-		if strings.Contains(r.Text, "{\"url\"") {
-			hasurl = true
-			ss = strings.Split(r.Text, "\"")
-		}
+		s := r.Text[len("// apigen:api"):]
+		json.Unmarshal([]byte(s), &api)
 	}
-	if !hasurl {
+
+	if api.Url == "" {
 		return nil, fmt.Errorf("url is not specified")
 	}
-	rv.url = ss[3]
+
+	rv.url = api.Url
+	rv.auth = api.Auth
+	rv.meth = api.Meth
 
 	return rv, nil
 }
@@ -163,7 +248,7 @@ func needCodegen(doc *ast.CommentGroup, prefix string) bool {
 	return nc
 }
 
-func ProccessFuncDecls(file *ast.File) ([]*MethodHandler, error) {
+func ParseMethods(file *ast.File) ([]*MethodHandler, error) {
 	mm := map[string][]MethodHandler{}
 
 	for _, d := range file.Decls {
@@ -203,40 +288,4 @@ func ProccessFuncDecls(file *ast.File) ([]*MethodHandler, error) {
 	}
 
 	return mhs, nil
-}
-
-func WriteHttpHandlersTemplate(w io.Writer, mhs []*MethodHandler) {
-	for _, m := range mhs {
-		httpTpl.Execute(w, m.Template())
-		for _, i := range m.child {
-			caseTpl.Execute(w, i.Template())
-		}
-		fmt.Fprintf(w, "\n\tdefault:")
-		fmt.Fprintf(w, "\n\t\tw.WriteHeader(http.StatusNotFound)")
-		fmt.Fprintf(w, "\n\t}")
-		fmt.Fprintf(w, "\n}\n\n")
-
-		for _, i := range m.child {
-			i.PrintHandler(w)
-		}
-	}
-}
-
-func WriteHttpHandlersFormat(w io.Writer, mhs []*MethodHandler) {
-	for _, m := range mhs {
-		fmt.Fprintf(w, "func (%s %s) ServeHTTP(w http.ResponseWriter, r *http.Request) {\n", m.arg, m.rec)
-		fmt.Fprintf(w, "\tswitch r.URL.Path {\n")
-		for _, i := range m.child {
-			fmt.Fprintf(w, "\tcase \"%s\":\n", i.url)
-			fmt.Fprintf(w, "\t\t%s.handle%s(w, r)\n", i.arg, i.n)
-		}
-		fmt.Fprintf(w, "\tdefault:\n")
-		fmt.Fprintf(w, "\t\tw.WriteHeader(http.StatusNotFound)\n")
-		fmt.Fprintf(w, "\t}\n")
-		fmt.Fprintf(w, "}\n\n")
-
-		for _, i := range m.child {
-			i.PrintHandler(w)
-		}
-	}
 }

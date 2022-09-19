@@ -2,51 +2,143 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io"
 	"os"
+	"strings"
+	"text/template"
 )
 
-// код писать тут
+var (
+	headerTmp = template.Must(template.New("structTmpl").Parse(`
+package {{ .Name }}
 
-func writePackageHeader(w io.Writer, pn string) {
-	fmt.Fprintln(w, "package ", pn)
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "import (\n")
-	fmt.Fprintf(w, "\t\"%s\"\n", "net/http")
-	fmt.Fprintf(w, "\t\"%s\"\n", "context")
-	fmt.Fprintf(w, "\t\"%s\"\n", "encoding/json")
-	fmt.Fprintf(w, "\n)\n")
-	fmt.Fprintln(w)
+import (
+	{{ range .Imports}}"{{.}}"
+	{{ end }}
+)
+	`))
+)
+
+type PackageTemplate struct {
+	Name    string
+	Imports []string
+}
+
+type ParsedFile struct {
+	Methods []*MethodHandler
+	Structs []*StructDef
+}
+
+type Generator struct {
+	out  io.Writer
+	file *ast.File
+
+	generatorPrefix string
+	validatorPrefix string
+
+	parsed *ParsedFile
+}
+
+func NewGenerator(in, out, gen, val string) (*Generator, error) {
+	o, e := os.Create(out)
+	if e != nil {
+		return nil, e
+	}
+
+	fs := token.NewFileSet()
+	f, e := parser.ParseFile(fs, in, nil, parser.ParseComments)
+	if e != nil {
+		return nil, e
+	}
+
+	return &Generator{
+		out:             o,
+		file:            f,
+		generatorPrefix: gen,
+		validatorPrefix: val,
+		parsed:          &ParsedFile{},
+	}, nil
+}
+
+func (g *Generator) WritePackageHeader(packages []string) {
+	pt := PackageTemplate{
+		Name:    g.file.Name.Name,
+		Imports: packages,
+	}
+
+	headerTmp.Execute(g.out, pt)
+}
+
+func (g *Generator) ParseMethods() error {
+	res, err := ParseMethods(g.file)
+	if err != nil {
+		return err
+	}
+
+	g.parsed.Methods = res
+
+	return nil
+}
+
+func (g *Generator) ParseStructs() error {
+	arguments := ""
+	for _, h := range g.parsed.Methods {
+		for _, m := range h.child {
+			arguments += strings.Join(m.argt, " ")
+		}
+	}
+
+	res, err := ParseStructs(g.file, arguments)
+	if err != nil {
+		return err
+	}
+
+	g.parsed.Structs = res
+
+	return nil
+}
+
+func (g *Generator) WriteHttpHandlers() {
+	for _, m := range g.parsed.Methods {
+		httpTmpl.Execute(g.out, m.HttpTemplate())
+		for _, h := range m.child {
+			hndlTmpl.Execute(g.out, h.Template())
+		}
+	}
+}
+
+func (g *Generator) WriteStructs() {
+	for _, s := range g.parsed.Structs {
+		structTmpl.Execute(g.out, s.Template())
+	}
 }
 
 func main() {
 	outfile := "../api_handlers.go"
-	out, err := os.Create(outfile)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
 	infile := "../api.go"
-	fs := token.NewFileSet()
-	file, err := parser.ParseFile(fs, infile, nil, parser.ParseComments)
+
+	g, err := NewGenerator(infile, outfile, "// apigen", "apivalidator")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	writePackageHeader(out, file.Name.Name)
-
-	// find all methods handlers
-	mhs, err := ProccessFuncDecls(file)
+	err = g.ParseMethods()
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	WriteHttpHandlersFormat(out, mhs)
+	err = g.ParseStructs()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 
-	_, err = ParseStructs(file, "CreateParams")
+	g.WritePackageHeader([]string{"encoding/json", "fmt", "io/ioutil", "net/http", "net/url", "strconv", "strings"})
+	g.WriteHttpHandlers()
+	g.WriteStructs()
 }

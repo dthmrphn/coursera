@@ -3,53 +3,80 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 )
 
-// тут вы пишете код
-// обращаю ваше внимание - в этом задании запрещены глобальные переменные
-
-type DbResponseError struct {
-	e string
-	s int
+// Columns definition
+type ColumnType interface {
+	Type() interface{}
+	Valid(val interface{}) bool
 }
 
-func (e *DbResponseError) Error() string {
-	return e.e
+type ColumnString struct {
+	Null bool
 }
 
-type DbResponse struct {
-	r  map[string]interface{}
-	re *DbResponseError
+func (col *ColumnString) Type() interface{} {
+	if col.Null {
+		return new(*string)
+	}
+	return new(string)
+}
+
+func (col *ColumnString) Valid(val interface{}) bool {
+	if val == nil {
+		return col.Null
+	}
+	_, ok := val.(string)
+	return ok
+}
+
+type ColumnInteger struct {
+	Null bool
+}
+
+func (col *ColumnInteger) Type() interface{} {
+	if col.Null {
+		return new(*int)
+	}
+	return new(int)
+}
+
+func (col *ColumnInteger) Valid(val interface{}) bool {
+	if val == nil {
+		return col.Null
+	}
+	_, ok := val.(int)
+	return ok
 }
 
 type Column struct {
-	n string
-	t string
-	v interface{}
+	Field      string
+	Type       ColumnType
+	Collation  interface{}
+	Null       interface{}
+	Key        string
+	Default    interface{}
+	Extra      string
+	Privileges string
+	Comment    string
 }
 
+// Table definitions
 type Table struct {
 	n string
 	k string
 	c []Column
 }
 
-func (t *Table) newRow() []string {
-	row := make([]string, len(t.c))
-	for i := range row {
-		row[i] = ""
+func (t *Table) newRow() []interface{} {
+	row := make([]interface{}, 0, len(t.c))
+	for _, v := range t.c {
+		row = append(row, v.Type.Type())
 	}
 
 	return row
-}
-
-type DbRequest struct {
-	table Table
-	id    int
 }
 
 type DbExplorer struct {
@@ -59,22 +86,43 @@ type DbExplorer struct {
 }
 
 func (e *DbExplorer) getColumns(table string) ([]Column, error) {
-	row, err := e.db.Query(fmt.Sprintf("SELECT * FROM %s", table))
+	rows, err := e.db.Query("SHOW FULL COLUMNS FROM " + table)
 	if err != nil {
 		return nil, err
 	}
-	defer row.Close()
+	defer rows.Close()
 
-	cols, err := row.Columns()
-	if err != nil {
-		return nil, err
-	}
+	var (
+		colType string
+		colNull string
+		isNull  bool
+	)
 
-	rv := make([]Column, 0, len(cols))
-	for _, c := range cols {
-		col := Column{
-			n: c,
+	rv := make([]Column, 0)
+	col := Column{}
+
+	for rows.Next() {
+		if err := rows.Scan(
+			&col.Field,
+			&colType,
+			&col.Collation,
+			&colNull,
+			&col.Key,
+			&col.Default,
+			&col.Extra,
+			&col.Privileges,
+			&col.Comment,
+		); err != nil {
+			return nil, err
 		}
+
+		isNull = colNull == "YES"
+		if strings.Contains(colType, "int") {
+			col.Type = &ColumnInteger{Null: isNull}
+		} else {
+			col.Type = &ColumnString{Null: isNull}
+		}
+
 		rv = append(rv, col)
 	}
 
@@ -110,106 +158,26 @@ func (e *DbExplorer) getTables() (map[string]Table, error) {
 
 	rv := make(map[string]Table, len(names))
 	for _, name := range names {
-		c, err := e.getColumns(name)
+		cols, err := e.getColumns(name)
 		if err != nil {
 			return nil, err
 		}
 		t := Table{
-			c: c,
+			c: cols,
 			n: name,
 		}
+
+		for _, col := range cols {
+			if col.Key == "PRI" {
+				t.k = col.Field
+				break
+			}
+		}
+
 		rv[name] = t
 	}
 
 	return rv, nil
-}
-
-func (e *DbExplorer) newRequest(r *http.Request) (*DbRequest, error) {
-	if r.URL.Path == "/" {
-		return nil, nil
-	}
-
-	paths := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-
-	rv := &DbRequest{}
-
-	if len(paths) >= 1 {
-		if _, ok := e.tables[paths[0]]; !ok {
-			return nil, &DbResponseError{"unknown table", http.StatusNotFound}
-		}
-		rv.table = e.tables[paths[0]]
-	}
-
-	if len(paths) >= 2 {
-		if id, err := strconv.Atoi(paths[1]); err == nil {
-			rv.id = id
-		}
-	}
-
-	return rv, nil
-}
-
-func (e *DbExplorer) handlerGetMethod(req *DbRequest) DbResponse {
-	rv := DbResponse{
-		r:  map[string]interface{}{},
-		re: &DbResponseError{"", http.StatusOK},
-	}
-
-	if req == nil {
-		tables := make([]string, 0, len(e.tables))
-		for table, _ := range e.tables {
-			tables = append(tables, table)
-		}
-
-		rv.r["tables"] = tables
-		return rv
-	}
-
-	// limit := 5
-	// offset := 0
-	// q := fmt.Sprintf("SELECT * FROM %s  LIMIT ? OFFSET ?", req.table.n)
-	// rows, err := e.db.Query(q, limit, offset)
-	q := fmt.Sprintf("SELECT * FROM %s", req.table.n)
-	rows, err := e.db.Query(q)
-	if err != nil {
-		rv.re.e = err.Error()
-		return rv
-	}
-	defer rows.Close()
-
-	// records := make([]map[string]interface{}, 0)
-
-	for rows.Next() {
-		row := req.table.newRow()
-		if err := rows.Scan(row); err == nil {
-			// records = append(records, row)
-			fmt.Println(row)
-		}
-		fmt.Println(row)
-	}
-	return rv
-}
-
-func (e *DbExplorer) RouteQuery(r *http.Request) DbResponse {
-	rv := DbResponse{
-		r:  map[string]interface{}{},
-		re: &DbResponseError{"", http.StatusOK},
-	}
-
-	req, err := e.newRequest(r)
-	if err != nil {
-		rv.re = err.(*DbResponseError)
-		return rv
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		rv = e.handlerGetMethod(req)
-	default:
-		rv.re = &DbResponseError{"unknown method", http.StatusBadRequest}
-	}
-
-	return rv
 }
 
 func (h *DbExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -218,20 +186,18 @@ func (h *DbExplorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Error string      `json:"error,omitempty"`
 	}{}
 
-	dbr := h.RouteQuery(r)
+	status := http.StatusOK
 
-	if dbr.re.e != "" {
-		res.Error = dbr.re.e
+	rv, err := h.handlerRouter(r)
+	if rv == nil {
+		res.Error = err.(*DbResponseError).e
+		status = err.(*DbResponseError).s
+	} else {
+		res.Data = rv
 	}
 
-	if dbr.r != nil {
-		res.Data = dbr.r
-	}
-
-	js, _ := json.Marshal(res)
-
-	w.WriteHeader(dbr.re.s)
-	// w.Header().Set("Content-Type", "application/json")
+	js, _ := json.MarshalIndent(res, "", " ")
+	w.WriteHeader(status)
 	w.Write(js)
 }
 

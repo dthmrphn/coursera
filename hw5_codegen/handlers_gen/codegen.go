@@ -117,8 +117,13 @@ func (g *Generator) WriteStructs() {
 }
 
 func main() {
-	outfile := "../api_handlers.go"
-	infile := "../api.go"
+	if len(os.Args) < 3 {
+		fmt.Printf("usage:\n\tcodegen <infile> <outfile>\n")
+		return
+	}
+
+	infile := os.Args[1]
+	outfile := os.Args[2]
 
 	g, err := NewGenerator(infile, outfile, "apigen", "apivalidator")
 	if err != nil {

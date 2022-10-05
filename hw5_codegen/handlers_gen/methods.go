@@ -180,7 +180,6 @@ func ParseMethodHandler(f *ast.FuncDecl) (*MethodHandler, error) {
 
 	// arguments
 	for _, r := range f.Type.Params.List {
-		// rv.args = append(rv.args, r.Names[0].Name)
 		switch xv := r.Type.(type) {
 		case *ast.StarExpr:
 			if si, ok := xv.X.(*ast.Ident); ok {
@@ -190,10 +189,6 @@ func ParseMethodHandler(f *ast.FuncDecl) (*MethodHandler, error) {
 		case *ast.Ident:
 			rv.argt = append(rv.argt, xv.Name)
 			rv.args = append(rv.args, strings.ToLower(xv.Name))
-			// case *ast.SelectorExpr:
-			// 	if si, ok := xv.X.(*ast.Ident); ok {
-			// 		rv.argt = append(rv.argt, si.Name+"."+xv.Sel.Name)
-			// 	}
 		}
 	}
 
@@ -274,7 +269,7 @@ func ParseMethods(file *ast.File, prefix string) ([]*MethodHandler, error) {
 		return nil, fmt.Errorf("no marked methods to generate api")
 	}
 
-	mhs := make([]*MethodHandler, 0)
+	mhs := make([]*MethodHandler, 0, len(mm))
 
 	for _, m := range mm {
 		mh := &MethodHandler{

@@ -7,6 +7,9 @@ import (
 	"strings"
 
 	"google.golang.org/grpc"
+	codes "google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	status "google.golang.org/grpc/status"
 )
 
 type bizServer struct {
@@ -43,10 +46,14 @@ func newAclAuth(acl string) (a *aclAuth, err error) {
 
 	auth := make(map[string][]string, len(paths))
 	for consumer, methods := range paths {
-		auth[consumer] = make([]string, len(methods))
-		for _, method := range methods {
-			auth[consumer] = strings.Split(method, "/")
-		}
+		// auth[consumer] = make([]string, len(methods))
+		// for _, method := range methods {
+		// 	auth[consumer] = strings.Split(method, "/")
+		// }
+		auth[consumer] = methods
+	}
+	a = &aclAuth{
+		acl: auth,
 	}
 
 	return
@@ -61,11 +68,11 @@ func newAdminServer() (as adminServer) {
 	return
 }
 
-func (as adminServer) Logging(_ *Nothing, alog Admin_LoggingServer) error {
+func (as adminServer) Logging(_ *Nothing, server Admin_LoggingServer) error {
 	return nil
 }
 
-func (as adminServer) Statistics(*StatInterval, Admin_StatisticsServer) error {
+func (as adminServer) Statistics(interval *StatInterval, server Admin_StatisticsServer) error {
 	return nil
 }
 
@@ -78,23 +85,65 @@ func newMiddleWare(a *aclAuth) (mw *middleWare, err error) {
 	err = nil
 	mw = &middleWare{
 		auth: a,
-		opts: []grpc.ServerOption{
-			grpc.UnaryInterceptor(mw.unaryInterceptor),
-			grpc.StreamInterceptor(mw.streamInterceptor),
-		},
 	}
+
+	mw.opts = []grpc.ServerOption{
+		grpc.UnaryInterceptor(mw.unaryInterceptor),
+		grpc.StreamInterceptor(mw.streamInterceptor),
+	}
+
 	return
 }
 
-func (mw *middleWare) unaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
-	resp = nil
-	err = nil
-	return
+func (mw *middleWare) authorize(ctx context.Context, method string) error {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Errorf(codes.InvalidArgument, "failed to get metadata")
+	}
+
+	consumers, ok := md["consumer"]
+	if !ok {
+		return status.Errorf(codes.Unauthenticated, "unknown consumer")
+	}
+
+	allowedMethods, ok := mw.auth.acl[consumers[0]]
+	if !ok {
+		return status.Errorf(codes.Unauthenticated, "unknown consumer")
+	}
+
+	isAllowed := false
+	for _, m := range allowedMethods {
+		if m == method || strings.Split(m, "/")[2] == "*" {
+			isAllowed = true
+			break
+		}
+	}
+
+	if !isAllowed {
+		return status.Errorf(codes.Unauthenticated, "method isnt allowed")
+	}
+
+	return nil
 }
 
-func (mw *middleWare) streamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
-	err = nil
-	return
+func (mw *middleWare) invoke(ctx context.Context, method string) error {
+	return nil
+}
+
+func (mw *middleWare) unaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	err := mw.authorize(ctx, info.FullMethod)
+	if err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
+}
+
+func (mw *middleWare) streamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	err := mw.authorize(ss.Context(), info.FullMethod)
+	if err != nil {
+		return err
+	}
+	return handler(srv, ss)
 }
 
 func StartMyMicroservice(ctx context.Context, listenAddr, ACLData string) (err error) {

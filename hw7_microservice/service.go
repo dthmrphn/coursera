@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
+	"sync"
 
 	"google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	status "google.golang.org/grpc/status"
 )
 
@@ -46,10 +48,6 @@ func newAclAuth(acl string) (a *aclAuth, err error) {
 
 	auth := make(map[string][]string, len(paths))
 	for consumer, methods := range paths {
-		// auth[consumer] = make([]string, len(methods))
-		// for _, method := range methods {
-		// 	auth[consumer] = strings.Split(method, "/")
-		// }
 		auth[consumer] = methods
 	}
 	a = &aclAuth{
@@ -59,16 +57,78 @@ func newAclAuth(acl string) (a *aclAuth, err error) {
 	return
 }
 
-type adminServer struct {
-	UnimplementedAdminServer
+type eventLogs struct {
+	id int
+	e  map[int]chan *Event
+
+	mu *sync.Mutex
 }
 
-func newAdminServer() (as adminServer) {
+func newEventLogs() *eventLogs {
+	e := &eventLogs{}
+	e.e = make(map[int]chan *Event)
+
+	e.mu = &sync.Mutex{}
+
+	return e
+}
+
+func (e *eventLogs) NewChan() (chan *Event, int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.id++
+	e.e[e.id] = make(chan *Event)
+
+	return e.e[e.id], e.id
+}
+
+func (e *eventLogs) Notify(evt *Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, c := range e.e {
+		c <- evt
+	}
+}
+
+func (e *eventLogs) Delete(id int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	close(e.e[id])
+	delete(e.e, id)
+}
+
+func (e *eventLogs) DeleteAll() {
+	for id := range e.e {
+		e.Delete(id)
+	}
+}
+
+type adminServer struct {
+	UnimplementedAdminServer
+
+	e *eventLogs
+}
+
+func newAdminServer(e *eventLogs) (as adminServer) {
 	as = adminServer{}
+	as.e = e
 	return
 }
 
 func (as adminServer) Logging(_ *Nothing, server Admin_LoggingServer) error {
+	ch, id := as.e.NewChan()
+	defer as.e.Delete(id)
+
+	for c := range ch {
+		err := server.Send(c)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -79,9 +139,11 @@ func (as adminServer) Statistics(interval *StatInterval, server Admin_Statistics
 type middleWare struct {
 	auth *aclAuth
 	opts []grpc.ServerOption
+
+	e *eventLogs
 }
 
-func newMiddleWare(a *aclAuth) (mw *middleWare, err error) {
+func newMiddleWare(a *aclAuth, e *eventLogs) (mw *middleWare, err error) {
 	err = nil
 	mw = &middleWare{
 		auth: a,
@@ -91,6 +153,8 @@ func newMiddleWare(a *aclAuth) (mw *middleWare, err error) {
 		grpc.UnaryInterceptor(mw.unaryInterceptor),
 		grpc.StreamInterceptor(mw.streamInterceptor),
 	}
+
+	mw.e = e
 
 	return
 }
@@ -111,6 +175,19 @@ func (mw *middleWare) authorize(ctx context.Context, method string) error {
 		return status.Errorf(codes.Unauthenticated, "unknown consumer")
 	}
 
+	host := ""
+	if p, ok := peer.FromContext(ctx); ok {
+		host = p.Addr.String()
+	}
+
+	e := &Event{
+		Consumer: consumers[0],
+		Method:   method,
+		Host:     host,
+	}
+
+	mw.e.Notify(e)
+
 	isAllowed := false
 	for _, m := range allowedMethods {
 		if m == method || strings.Split(m, "/")[2] == "*" {
@@ -123,10 +200,6 @@ func (mw *middleWare) authorize(ctx context.Context, method string) error {
 		return status.Errorf(codes.Unauthenticated, "method isnt allowed")
 	}
 
-	return nil
-}
-
-func (mw *middleWare) invoke(ctx context.Context, method string) error {
 	return nil
 }
 
@@ -152,7 +225,9 @@ func StartMyMicroservice(ctx context.Context, listenAddr, ACLData string) (err e
 		return
 	}
 
-	mw, err := newMiddleWare(auth)
+	e := newEventLogs()
+
+	mw, err := newMiddleWare(auth, e)
 	if err != nil {
 		return
 	}
@@ -164,7 +239,7 @@ func StartMyMicroservice(ctx context.Context, listenAddr, ACLData string) (err e
 
 	server := grpc.NewServer(mw.opts...)
 
-	RegisterAdminServer(server, newAdminServer())
+	RegisterAdminServer(server, newAdminServer(e))
 	RegisterBizServer(server, newBizServer())
 
 	go server.Serve(lis)
